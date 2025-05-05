@@ -1,9 +1,9 @@
 /**
  * Resource Detail Component
  * Displays detailed information about a specific resource
- * with related data enrichment
+ * with related data enrichment and interactive visualizations
  */
-import { FC, useState } from 'react';
+import { FC, useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import usePageTransition from '../../hooks/usePageTransition';
@@ -24,7 +24,18 @@ import {
   Breadcrumbs,
   Anchor,
   ThemeIcon,
+  Image,
+  ActionIcon,
+  Tooltip,
+  ScrollArea,
+  Affix,
+  Transition,
+  SimpleGrid,
+  Progress,
+  Timeline,
+  ColorSwatch,
 } from '@mantine/core';
+import { useLocalStorage, useWindowScroll } from '@mantine/hooks';
 import {
   IconArrowLeft,
   IconAlertCircle,
@@ -35,6 +46,10 @@ import {
   IconAlien,
   IconCar,
   IconRocket,
+  IconStar,
+  IconStarFilled,
+  IconArrowUp,
+  IconShare,
 } from '@tabler/icons-react';
 import {
   getResourceById,
@@ -48,18 +63,72 @@ import {
   getResourceByUrl,
 } from '../../api/swapi';
 
-// Resource type configuration
+// Interface for favorite items
+interface FavoriteItem {
+  id: string;
+  type: ResourceType;
+  name: string;
+  timestamp: number;
+}
+
+// Interface for recently viewed items
+interface RecentlyViewedItem {
+  id: string;
+  type: ResourceType;
+  name: string;
+  timestamp: number;
+}
+
+// Resource type configuration with enhanced metadata
 const resourceConfig: Record<ResourceType, {
   label: string;
   color: string;
   icon: JSX.Element;
+  imagePlaceholder: string;
+  description: string;
 }> = {
-  people: { label: 'People', color: 'blue', icon: <IconUser size={16} /> },
-  planets: { label: 'Planets', color: 'teal', icon: <IconPlanet size={16} /> },
-  films: { label: 'Films', color: 'violet', icon: <IconMovie size={16} /> },
-  species: { label: 'Species', color: 'grape', icon: <IconAlien size={16} /> },
-  vehicles: { label: 'Vehicles', color: 'orange', icon: <IconCar size={16} /> },
-  starships: { label: 'Starships', color: 'pink', icon: <IconRocket size={16} /> },
+  people: {
+    label: 'People',
+    color: 'blue',
+    icon: <IconUser size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/characters/1.jpg',
+    description: 'Characters from the Star Wars universe'
+  },
+  planets: {
+    label: 'Planets',
+    color: 'teal',
+    icon: <IconPlanet size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/planets/2.jpg',
+    description: 'Celestial bodies from the Star Wars galaxy'
+  },
+  films: {
+    label: 'Films',
+    color: 'violet',
+    icon: <IconMovie size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/films/1.jpg',
+    description: 'Star Wars saga movies'
+  },
+  species: {
+    label: 'Species',
+    color: 'grape',
+    icon: <IconAlien size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/species/1.jpg',
+    description: 'Different types of sentient beings'
+  },
+  vehicles: {
+    label: 'Vehicles',
+    color: 'orange',
+    icon: <IconCar size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/vehicles/4.jpg',
+    description: 'Transportation machines used on planets'
+  },
+  starships: {
+    label: 'Starships',
+    color: 'pink',
+    icon: <IconRocket size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/starships/5.jpg',
+    description: 'Spacecraft used for interstellar travel'
+  },
 };
 
 // Helper to extract ID from URL
@@ -171,9 +240,41 @@ const ResourceDetail: FC = () => {
   const { type = 'people', id } = useParams<{ type: ResourceType; id: string }>();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<string | null>('details');
+  const [scroll, scrollTo] = useWindowScroll();
+
+  // Favorites state
+  const [favorites, setFavorites] = useLocalStorage<FavoriteItem[]>({
+    key: 'resource-favorites',
+    defaultValue: [],
+  });
+
+  // Recently viewed state
+  const [recentlyViewed, setRecentlyViewed] = useLocalStorage<RecentlyViewedItem[]>({
+    key: 'resource-recently-viewed',
+    defaultValue: [],
+  });
 
   // Validate resource type
   const validType = resourceConfig[type as ResourceType] ? type as ResourceType : 'people';
+
+  // Add to recently viewed when component mounts or id/type changes
+  useEffect(() => {
+    if (id) {
+      // Get the resource name (will be updated when data loads)
+      const name = getResourceName(properties) || `${validType} ${id}`;
+
+      setRecentlyViewed(prev => {
+        // Remove this item if it already exists
+        const filtered = prev.filter(item => !(item.id === id && item.type === validType));
+
+        // Add to the beginning of the array with current timestamp
+        return [
+          { id, type: validType, name, timestamp: Date.now() },
+          ...filtered,
+        ].slice(0, 10); // Keep only the 10 most recent
+      });
+    }
+  }, [id, validType]);
 
   // Fetch resource details
   const {
@@ -209,6 +310,39 @@ const ResourceDetail: FC = () => {
   const handleBackToList = () => {
     navigate(`/resources/${validType}`);
   };
+
+  // Check if current resource is favorited
+  const isFavorite = useMemo(() => {
+    return favorites.some(item => item.id === id && item.type === validType);
+  }, [favorites, id, validType]);
+
+  // Toggle favorite status
+  const toggleFavorite = () => {
+    if (!properties) return;
+
+    const name = getResourceName(properties);
+
+    setFavorites(prev => {
+      if (isFavorite) {
+        // Remove from favorites
+        return prev.filter(item => !(item.id === id && item.type === validType));
+      } else {
+        // Add to favorites
+        return [...prev, {
+          id: id || '',
+          type: validType,
+          name,
+          timestamp: Date.now()
+        }];
+      }
+    });
+  };
+
+  // Scroll to top button visibility
+  const showScrollToTop = scroll.y > 300;
+
+  // Handle scroll to top
+  const handleScrollToTop = () => scrollTo({ y: 0 });
 
   // Define a union type for all possible property types
   type AllResourceProperties = PersonProperties | PlanetProperties | FilmProperties |
@@ -265,19 +399,62 @@ const ResourceDetail: FC = () => {
     // Common properties to exclude from general display
     const excludeProps = ['created', 'edited', 'url', 'films', 'species', 'vehicles', 'starships', 'residents', 'people', 'pilots', 'characters', 'planets', 'homeworld'];
 
+    // Format property value based on type
+    const formatValue = (key: string, value: any): JSX.Element => {
+      // Handle empty values
+      if (!value) return <Text color="dimmed">N/A</Text>;
+
+      // Format based on property name
+      if (key.includes('date')) {
+        // Format dates
+        return <Text>{new Date(value).toLocaleDateString()}</Text>;
+      } else if (key.includes('color')) {
+        // Show colors with a swatch
+        return (
+          <Group spacing="xs">
+            <ColorSwatch color={value} size={16} />
+            <Text>{value}</Text>
+          </Group>
+        );
+      } else if (typeof value === 'number' || !isNaN(Number(value))) {
+        // Format numbers with commas
+        const num = Number(value);
+        if (!isNaN(num)) {
+          // If it's a large number, format it
+          if (num > 1000) {
+            return (
+              <Group position="apart" noWrap>
+                <Text>{num.toLocaleString()}</Text>
+                <Progress
+                  value={Math.min(100, num / 1000000 * 100)}
+                  size="sm"
+                  style={{ width: 60 }}
+                  color={config.color}
+                />
+              </Group>
+            );
+          }
+        }
+      }
+
+      // Default text display
+      return <Text>{value}</Text>;
+    };
+
     return Object.entries(properties)
       .filter(([key]) => !excludeProps.includes(key))
       .map(([key, value]) => (
-        <Grid.Col span={6} key={key}>
-          <Paper p="xs" withBorder>
-            <Text size="xs" color="dimmed" transform="uppercase">
-              {key.replace('_', ' ')}
+        <Card key={key} p="md" withBorder radius="md" shadow="sm">
+          <Group position="apart" mb="xs">
+            <Text size="xs" color="dimmed" transform="uppercase" weight={700}>
+              {key.replace(/_/g, ' ')}
             </Text>
-            <Text>
-              {value || 'N/A'}
-            </Text>
-          </Paper>
-        </Grid.Col>
+            {key === 'name' || key === 'title' ? (
+              <Badge color={config.color} size="sm">Primary</Badge>
+            ) : null}
+          </Group>
+          {formatValue(key, value)}
+        </Card>
       ));
   };
 
@@ -558,8 +735,8 @@ const ResourceDetail: FC = () => {
         ))}
       </Breadcrumbs>
 
-      {/* Back button */}
-      <Group mb="md">
+      {/* Back button and actions */}
+      <Group position="apart" mb="md">
         <Button
           variant="subtle"
           leftIcon={<IconArrowLeft size={16} />}
@@ -567,47 +744,217 @@ const ResourceDetail: FC = () => {
         >
           Back to {config.label}
         </Button>
+
+        <Group spacing="xs">
+          <Tooltip label={isFavorite ? "Remove from favorites" : "Add to favorites"}>
+            <ActionIcon
+              color="yellow"
+              variant={isFavorite ? "filled" : "light"}
+              onClick={toggleFavorite}
+              size="lg"
+              radius="md"
+            >
+              {isFavorite ? <IconStarFilled size={18} /> : <IconStar size={18} />}
+            </ActionIcon>
+          </Tooltip>
+
+          <Tooltip label="Share">
+            <ActionIcon
+              color="blue"
+              variant="light"
+              size="lg"
+              radius="md"
+              onClick={() => {
+                // Copy current URL to clipboard
+                navigator.clipboard.writeText(window.location.href);
+                // In a real app, you would show a notification here
+              }}
+            >
+              <IconShare size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
       </Group>
 
       {/* Main content */}
-      <Paper withBorder p="md" radius="md">
-        <Group position="apart" mb="xs">
-          <Title order={2}>
-            {getResourceName(properties)}
-          </Title>
-          <Badge size="lg" color={config.color}>
-            {config.label}
-          </Badge>
-        </Group>
+      <Grid gutter="md">
+        {/* Left column - Image and key info */}
+        <Grid.Col lg={4} md={5} sm={12}>
+          <Paper withBorder p="md" radius="md" mb="md">
+            <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <Box sx={(theme) => ({
+                display: 'flex',
+                flexDirection: 'column',
+                [theme.fn.smallerThan('sm')]: {
+                  flexDirection: 'row',
+                  gap: theme.spacing.md,
+                },
+              })}>
+                <Image
+                  src={resourceConfig[validType].imagePlaceholder}
+                  height={250}
+                  alt={getResourceName(properties)}
+                  radius="md"
+                  withPlaceholder
+                  mb="md"
+                  sx={(theme) => ({
+                    [theme.fn.smallerThan('sm')]: {
+                      width: '40%',
+                      height: 'auto',
+                      minHeight: 150,
+                      marginBottom: 0,
+                    },
+                  })}
+                />
 
-        <Text color="dimmed" mb="md">
-          {data.result.description || `Detailed information about this ${validType.slice(0, -1)}.`}
-        </Text>
+                <Box sx={(theme) => ({
+                  [theme.fn.smallerThan('sm')]: {
+                    flex: 1,
+                  },
+                })}>
+                  <Group position="apart" mb="xs">
+                    <Badge size="lg" color={config.color}>
+                      {config.label}
+                    </Badge>
+                    <Text size="sm" color="dimmed">ID: {id}</Text>
+                  </Group>
 
-        <Divider mb="md" />
+                  <Title order={3} mb="xs" sx={(theme) => ({
+                    fontSize: theme.fontSizes.xl,
+                    [theme.fn.smallerThan('sm')]: {
+                      fontSize: theme.fontSizes.lg,
+                    },
+                  })}>
+                    {getResourceName(properties)}
+                  </Title>
 
-        <Tabs value={activeTab} onTabChange={setActiveTab}>
-          <Tabs.List>
-            <Tabs.Tab value="details" icon={<IconInfoCircle size={14} />}>
-              Details
-            </Tabs.Tab>
-            {renderRelatedTabs()}
-          </Tabs.List>
+                  <Text color="dimmed" mb="md" size="sm">
+                    {data.result.description || `Detailed information about this ${validType.slice(0, -1)}.`}
+                  </Text>
+                </Box>
+              </Box>
 
-          <Tabs.Panel value="details" pt="xs">
-            <Grid mt="md">
-              {renderProperties()}
-            </Grid>
-          </Tabs.Panel>
+              {/* Recently viewed section */}
+              {recentlyViewed.length > 1 && (
+                <>
+                  <Divider my="md" label="Recently Viewed" labelPosition="center" />
+                  <ScrollArea
+                    style={{ height: 150, flexGrow: 1 }}
+                    offsetScrollbars
+                    sx={(theme) => ({
+                      [theme.fn.smallerThan('sm')]: {
+                        height: 120,
+                      },
+                    })}
+                  >
+                    <Timeline active={0} bulletSize={24} lineWidth={2}>
+                      {recentlyViewed
+                        .filter(item => !(item.id === id && item.type === validType)) // Exclude current
+                        .slice(0, 5) // Show only 5 most recent
+                        .map((item) => (
+                          <Timeline.Item
+                            key={`${item.type}-${item.id}`}
+                            bullet={resourceConfig[item.type].icon}
+                            title={
+                              <Text size="sm" weight={500} lineClamp={1}>
+                                {item.name}
+                              </Text>
+                            }
+                          >
+                            <Group position="apart" noWrap>
+                              <Text color="dimmed" size="xs">
+                                {resourceConfig[item.type].label}
+                              </Text>
+                              <Button
+                                variant="subtle"
+                                compact
+                                size="xs"
+                                onClick={() => navigate(`/resources/${item.type}/${item.id}`)}
+                              >
+                                View
+                              </Button>
+                            </Group>
+                          </Timeline.Item>
+                        ))
+                      }
+                    </Timeline>
+                  </ScrollArea>
+                </>
+              )}
+            </Box>
+          </Paper>
+        </Grid.Col>
 
-          {/* Dynamic tabs for related resources */}
-          {Object.keys(properties).map(key => (
-            <Tabs.Panel key={key} value={key} pt="xs">
-              {renderRelatedContent()}
-            </Tabs.Panel>
-          ))}
-        </Tabs>
-      </Paper>
+        {/* Right column - Details and related */}
+        <Grid.Col lg={8} md={7} sm={12}>
+          <Paper withBorder p="md" radius="md">
+            <Tabs
+              value={activeTab}
+              onTabChange={setActiveTab}
+              sx={(theme) => ({
+                [theme.fn.smallerThan('xs')]: {
+                  '.mantine-Tabs-tabLabel': {
+                    fontSize: theme.fontSizes.xs,
+                  }
+                },
+              })}
+            >
+              <Tabs.List
+                sx={(theme) => ({
+                  flexWrap: 'wrap',
+                  [theme.fn.smallerThan('xs')]: {
+                    gap: 5,
+                  },
+                })}
+              >
+                <Tabs.Tab value="details" icon={<IconInfoCircle size={14} />}>
+                  Details
+                </Tabs.Tab>
+                {renderRelatedTabs()}
+              </Tabs.List>
+
+              <Tabs.Panel value="details" pt="xs">
+                <SimpleGrid
+                  cols={2}
+                  spacing="md"
+                  mt="md"
+                  breakpoints={[
+                    { maxWidth: 'md', cols: 2 },
+                    { maxWidth: 'sm', cols: 1 }
+                  ]}
+                >
+                  {renderProperties()}
+                </SimpleGrid>
+              </Tabs.Panel>
+
+              {/* Dynamic tabs for related resources */}
+              {Object.keys(properties).map(key => (
+                <Tabs.Panel key={key} value={key} pt="xs">
+                  {renderRelatedContent()}
+                </Tabs.Panel>
+              ))}
+            </Tabs>
+          </Paper>
+        </Grid.Col>
+      </Grid>
+
+      {/* Scroll to top button */}
+      <Affix position={{ bottom: 20, right: 20 }}>
+        <Transition transition="slide-up" mounted={showScrollToTop}>
+          {(transitionStyles) => (
+            <ActionIcon
+              color="blue"
+              variant="filled"
+              size="lg"
+              radius="xl"
+              style={transitionStyles}
+              onClick={handleScrollToTop}
+            >
+              <IconArrowUp size={16} />
+            </ActionIcon>
+          )}
+        </Transition>
+      </Affix>
     </>
   );
 };

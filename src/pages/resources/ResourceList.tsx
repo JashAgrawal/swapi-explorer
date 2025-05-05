@@ -1,8 +1,9 @@
 /**
  * Resource List Component
  * Displays a paginated table of resources with search and filtering
+ * Enhanced with advanced features like fuzzy search, virtual scrolling, and data visualization
  */
-import { FC, useState, useEffect, useMemo } from 'react';
+import { FC, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import usePageTransition from '../../hooks/usePageTransition';
@@ -23,14 +24,49 @@ import {
   Tooltip,
   Badge,
   useMantineTheme,
+  SegmentedControl,
+  Menu,
+  Checkbox,
+  Divider,
+  SimpleGrid,
+  Card,
+  Image,
+  RingProgress,
+  Transition,
+  ScrollArea,
+  Chip,
+  Select,
+  Popover,
+  ColorSwatch,
+  Grid,
+  ThemeIcon,
 } from '@mantine/core';
-import { useDebouncedValue } from '@mantine/hooks';
+import { useDebouncedValue, useLocalStorage, useViewportSize, useIntersection } from '@mantine/hooks';
 import {
   IconSearch,
   IconAlertCircle,
   IconEye,
   IconArrowsSort,
+  IconTable,
+  IconLayoutGrid,
+  IconFilter,
+  IconSettings,
+  IconChartPie,
+  IconStar,
+  IconStarFilled,
+  IconArrowUp,
+  IconArrowDown,
+  IconAdjustments,
+  IconRefresh,
+  IconDownload,
+  IconUser,
+  IconPlanet,
+  IconMovie,
+  IconAlien,
+  IconCar,
+  IconRocket,
 } from '@tabler/icons-react';
+import Fuse from 'fuse.js';
 import {
   getResources,
   ResourceType,
@@ -40,21 +76,81 @@ import {
   SearchResponse
 } from '../../api/swapi';
 
-// Resource type display configuration
-const resourceConfig: Record<ResourceType, { label: string; color: string }> = {
-  people: { label: 'People', color: 'blue' },
-  planets: { label: 'Planets', color: 'teal' },
-  films: { label: 'Films', color: 'violet' },
-  species: { label: 'Species', color: 'grape' },
-  vehicles: { label: 'Vehicles', color: 'orange' },
-  starships: { label: 'Starships', color: 'pink' },
+// Resource type display configuration with enhanced metadata
+const resourceConfig: Record<ResourceType, {
+  label: string;
+  color: string;
+  icon: JSX.Element;
+  imagePlaceholder: string;
+  description: string;
+}> = {
+  people: {
+    label: 'People',
+    color: 'blue',
+    icon: <IconUser size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/characters/1.jpg',
+    description: 'Characters from the Star Wars universe'
+  },
+  planets: {
+    label: 'Planets',
+    color: 'teal',
+    icon: <IconPlanet size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/planets/2.jpg',
+    description: 'Celestial bodies from the Star Wars galaxy'
+  },
+  films: {
+    label: 'Films',
+    color: 'violet',
+    icon: <IconMovie size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/films/1.jpg',
+    description: 'Star Wars saga movies'
+  },
+  species: {
+    label: 'Species',
+    color: 'grape',
+    icon: <IconAlien size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/species/1.jpg',
+    description: 'Different types of sentient beings'
+  },
+  vehicles: {
+    label: 'Vehicles',
+    color: 'orange',
+    icon: <IconCar size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/vehicles/4.jpg',
+    description: 'Transportation machines used on planets'
+  },
+  starships: {
+    label: 'Starships',
+    color: 'pink',
+    icon: <IconRocket size={16} />,
+    imagePlaceholder: 'https://starwars-visualguide.com/assets/img/starships/5.jpg',
+    description: 'Spacecraft used for interstellar travel'
+  },
 };
+
+// Interface for column configuration
+interface ColumnConfig {
+  key: string;
+  label: string;
+  sortable?: boolean;
+  visible?: boolean;
+  width?: string;
+  render?: (item: ResourceListItem) => JSX.Element;
+}
+
+// Interface for favorite items
+interface FavoriteItem {
+  id: string;
+  type: ResourceType;
+  name: string;
+}
 
 const ResourceList: FC = () => {
   const { type = 'people' } = useParams<{ type: ResourceType }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const theme = useMantineTheme();
+  const { width } = useViewportSize();
 
   // Get current page and search from URL params
   const currentPage = parseInt(searchParams.get('page') || '1', 10);
@@ -64,8 +160,39 @@ const ResourceList: FC = () => {
   const [searchValue, setSearchValue] = useState(currentSearch);
   const [debouncedSearch] = useDebouncedValue(searchValue, 500);
 
-  // Sort state for name column (null = no sort, true = ascending, false = descending)
-  const [nameSort, setNameSort] = useState<boolean | null>(null);
+  // View mode (table or grid)
+  const [viewMode, setViewMode] = useLocalStorage<'table' | 'grid'>({
+    key: 'resource-view-mode',
+    defaultValue: 'table',
+  });
+
+  // Favorites
+  const [favorites, setFavorites] = useLocalStorage<FavoriteItem[]>({
+    key: 'resource-favorites',
+    defaultValue: [],
+  });
+
+  // Column configuration
+  const [columns, setColumns] = useLocalStorage<ColumnConfig[]>({
+    key: `resource-columns-${type}`,
+    defaultValue: [
+      { key: 'uid', label: 'ID', sortable: true, visible: true, width: '100px' },
+      { key: 'name', label: 'Name', sortable: true, visible: true },
+      { key: 'actions', label: 'Actions', visible: true, width: '120px' },
+    ],
+  });
+
+  // Sort state for columns (key = column key, value = true for ascending, false for descending)
+  const [sortConfig, setSortConfig] = useLocalStorage<Record<string, boolean | null>>({
+    key: `resource-sort-${type}`,
+    defaultValue: { name: null },
+  });
+
+  // Reference to the scroll container for virtual scrolling
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Show stats panel
+  const [showStats, setShowStats] = useState(false);
 
   // Update URL when search or page changes
   useEffect(() => {
@@ -179,28 +306,78 @@ const ResourceList: FC = () => {
   const totalRecords = getTotalRecords();
   const totalPages = getTotalPages();
 
+  // Apply fuzzy search if there's a search term but no API search results
+  const fuzzySearchResults = useMemo(() => {
+    // Only apply client-side fuzzy search when:
+    // 1. There's a search term
+    // 2. We're not already getting search results from the API
+    // 3. We have base items to search through
+    if (!searchValue || debouncedSearch || baseItems.length === 0) {
+      return baseItems;
+    }
+
+    // Configure Fuse.js for fuzzy searching
+    const fuse = new Fuse(baseItems, {
+      keys: ['name', 'uid'],
+      threshold: 0.4, // Lower threshold = more strict matching
+      ignoreLocation: true,
+      includeScore: true,
+    });
+
+    // Perform the search
+    const results = fuse.search(searchValue);
+
+    // Return the matched items
+    return results.map(result => result.item);
+  }, [baseItems, searchValue, debouncedSearch]);
+
   // Apply client-side sorting if needed
   const items = useMemo(() => {
-    if (nameSort === null) return baseItems;
+    // Use fuzzy search results as the base for sorting
+    const itemsToSort = fuzzySearchResults;
 
-    return [...baseItems].sort((a, b) => {
-      const nameA = a.name.toLowerCase();
-      const nameB = b.name.toLowerCase();
+    // If no sort is applied, return the items as is
+    const activeSort = Object.entries(sortConfig).find(([_, value]) => value !== null);
+    if (!activeSort) return itemsToSort;
 
-      // Sort ascending (A-Z) or descending (Z-A)
-      return nameSort
-        ? nameA.localeCompare(nameB) // true = ascending
-        : nameB.localeCompare(nameA); // false = descending
+    const [sortKey, sortDirection] = activeSort;
+
+    return [...itemsToSort].sort((a, b) => {
+      // Handle different column types
+      if (sortKey === 'uid') {
+        const idA = parseInt(a.uid, 10);
+        const idB = parseInt(b.uid, 10);
+        return sortDirection ? idA - idB : idB - idA;
+      } else if (sortKey === 'name') {
+        const nameA = a.name.toLowerCase();
+        const nameB = b.name.toLowerCase();
+        // Sort ascending (A-Z) or descending (Z-A)
+        return sortDirection
+          ? nameA.localeCompare(nameB) // true = ascending
+          : nameB.localeCompare(nameA); // false = descending
+      }
+      return 0;
     });
-  }, [baseItems, nameSort]);
+  }, [fuzzySearchResults, sortConfig]);
 
-  // Handle name column sort toggle
-  const handleNameSort = () => {
+  // Handle column sort toggle
+  const handleColumnSort = (columnKey: string) => {
     // Cycle through: null (no sort) -> true (ascending) -> false (descending) -> null
-    setNameSort(prev => {
-      if (prev === null) return true; // First click: sort ascending
-      if (prev === true) return false; // Second click: sort descending
-      return null; // Third click: back to no sort
+    setSortConfig(prev => {
+      const newSortConfig = { ...prev };
+
+      // Reset all other columns
+      Object.keys(newSortConfig).forEach(key => {
+        if (key !== columnKey) newSortConfig[key] = null;
+      });
+
+      // Update the clicked column
+      const currentValue = prev[columnKey];
+      if (currentValue === null) newSortConfig[columnKey] = true; // First click: sort ascending
+      else if (currentValue === true) newSortConfig[columnKey] = false; // Second click: sort descending
+      else newSortConfig[columnKey] = null; // Third click: back to no sort
+
+      return newSortConfig;
     });
   };
 
@@ -215,31 +392,232 @@ const ResourceList: FC = () => {
       </tr>
     ));
 
+  // Toggle favorite status
+  const toggleFavorite = (id: string, name: string) => {
+    setFavorites(prev => {
+      const isFavorite = prev.some(item => item.id === id && item.type === type);
+
+      if (isFavorite) {
+        // Remove from favorites
+        return prev.filter(item => !(item.id === id && item.type === type));
+      } else {
+        // Add to favorites
+        return [...prev, { id, type, name }];
+      }
+    });
+  };
+
+  // Check if an item is favorited
+  const isFavorite = (id: string) => {
+    return favorites.some(item => item.id === id && item.type === type);
+  };
+
+  // Handle view mode toggle
+  const handleViewModeToggle = (value: 'table' | 'grid') => {
+    setViewMode(value);
+  };
+
+  // Toggle stats panel
+  const toggleStatsPanel = () => {
+    setShowStats(prev => !prev);
+  };
+
   return (
     <>
-      <Group position="apart" mb="md">
-        <Title order={2}>
-          {resourceConfig[type as ResourceType]?.label || 'Resources'}
-          <Badge ml="xs" size="lg" color={resourceConfig[type as ResourceType]?.color}>
-            {totalRecords} total
-          </Badge>
-        </Title>
+      <Paper withBorder p="lg" radius="md" mb="md">
+        <Box sx={(theme) => ({
+          display: 'flex',
+          flexDirection: 'column',
+          gap: theme.spacing.md,
 
-        <TextInput
-          placeholder="Search..."
-          icon={<IconSearch size={16} />}
-          value={searchValue}
-          onChange={(e) => setSearchValue(e.currentTarget.value)}
-          sx={{ width: 250 }}
-          rightSection={
-            searchValue && (
-              <ActionIcon onClick={() => setSearchValue('')} size="xs" radius="xl" variant="transparent">
-                ×
-              </ActionIcon>
-            )
-          }
-        />
-      </Group>
+          [theme.fn.largerThan('sm')]: {
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          },
+        })}>
+          <Box>
+            <Group spacing="xs" mb="xs" sx={(theme) => ({
+              flexWrap: 'wrap',
+            })}>
+              <Title order={2} size="h3" sx={(theme) => ({
+                [theme.fn.smallerThan('sm')]: {
+                  fontSize: theme.fontSizes.xl,
+                },
+              })}>
+                {resourceConfig[type as ResourceType]?.label || 'Resources'}
+              </Title>
+              <Badge size="lg" color={resourceConfig[type as ResourceType]?.color}>
+                {totalRecords} total
+              </Badge>
+            </Group>
+
+            <Text color="dimmed" size="sm" mb="xs">
+              {resourceConfig[type as ResourceType]?.description}
+            </Text>
+          </Box>
+
+          <Box sx={(theme) => ({
+            display: 'flex',
+            flexDirection: 'column',
+            gap: theme.spacing.sm,
+
+            [theme.fn.largerThan('sm')]: {
+              alignItems: 'flex-end',
+            },
+          })}>
+            <Group spacing="xs">
+              <SegmentedControl
+                value={viewMode}
+                onChange={handleViewModeToggle}
+                data={[
+                  { label: <Tooltip label="Table View"><IconTable size={16} /></Tooltip>, value: 'table' },
+                  { label: <Tooltip label="Grid View"><IconLayoutGrid size={16} /></Tooltip>, value: 'grid' },
+                ]}
+                size="sm"
+              />
+            {/* TODO : THIS LOOKS OUT OP PLACE  */}
+              <Tooltip label="Toggle Statistics">
+                <ActionIcon
+                  variant={showStats ? "filled" : "light"}
+                  color="blue"
+                  onClick={toggleStatsPanel}
+                >
+                  <IconChartPie size={18} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+
+            <TextInput
+              placeholder="Search..."
+              icon={<IconSearch size={16} />}
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.currentTarget.value)}
+              sx={(theme) => ({
+                width: '100%',
+                [theme.fn.largerThan('xs')]: {
+                  width: 250,
+                },
+              })}
+              rightSection={
+                searchValue && (
+                  <ActionIcon onClick={() => setSearchValue('')} size="xs" radius="xl" variant="transparent">
+                    ×
+                  </ActionIcon>
+                )
+              }
+            />
+          </Box>
+        </Box>
+      </Paper>
+
+      {/* Stats Panel */}
+      {showStats && (
+        <Paper withBorder p="md" radius="md" mb="md" sx={{ backgroundColor: theme.colors.gray[0] }}>
+          <Title order={4} mb="md" sx={(theme) => ({
+            fontSize: theme.fontSizes.lg,
+            [theme.fn.smallerThan('sm')]: {
+              fontSize: theme.fontSizes.md,
+            },
+          })}>Resource Statistics</Title>
+          <SimpleGrid
+            cols={3}
+            spacing="md"
+            breakpoints={[
+              { maxWidth: 'md', cols: 3, spacing: 'sm' },
+              { maxWidth: 'sm', cols: 2, spacing: 'sm' },
+              { maxWidth: 'xs', cols: 1, spacing: 'sm' },
+            ]}
+          >
+            <Paper withBorder p="md" radius="md">
+              <Group position="apart" noWrap>
+                <Box>
+                  <Text size="xs" color="dimmed" transform="uppercase" lineClamp={1}>
+                    Total {resourceConfig[type as ResourceType]?.label}
+                  </Text>
+                  <Text weight={700} size="xl" sx={(theme) => ({
+                    [theme.fn.smallerThan('md')]: {
+                      fontSize: theme.fontSizes.lg,
+                    },
+                  })}>
+                    {totalRecords}
+                  </Text>
+                </Box>
+                <ThemeIcon
+                  size={40}
+                  radius="md"
+                  color={resourceConfig[type as ResourceType]?.color}
+                  sx={(theme) => ({
+                    [theme.fn.smallerThan('md')]: {
+                      minWidth: 32,
+                      height: 32,
+                    },
+                  })}
+                >
+                  {resourceConfig[type as ResourceType]?.icon}
+                </ThemeIcon>
+              </Group>
+            </Paper>
+
+            <Paper withBorder p="md" radius="md">
+              <Group position="apart" noWrap>
+                <Box>
+                  <Text size="xs" color="dimmed" transform="uppercase">Favorites</Text>
+                  <Text weight={700} size="xl" sx={(theme) => ({
+                    [theme.fn.smallerThan('md')]: {
+                      fontSize: theme.fontSizes.lg,
+                    },
+                  })}>
+                    {favorites.filter(f => f.type === type).length}
+                  </Text>
+                </Box>
+                <ThemeIcon
+                  size={40}
+                  radius="md"
+                  color="yellow"
+                  sx={(theme) => ({
+                    [theme.fn.smallerThan('md')]: {
+                      minWidth: 32,
+                      height: 32,
+                    },
+                  })}
+                >
+                  <IconStarFilled size={20} />
+                </ThemeIcon>
+              </Group>
+            </Paper>
+
+            <Paper withBorder p="md" radius="md">
+              <Group position="apart" noWrap>
+                <Box>
+                  <Text size="xs" color="dimmed" transform="uppercase">Pages</Text>
+                  <Text weight={700} size="xl" sx={(theme) => ({
+                    [theme.fn.smallerThan('md')]: {
+                      fontSize: theme.fontSizes.lg,
+                    },
+                  })}>
+                    {totalPages}
+                  </Text>
+                </Box>
+                <RingProgress
+                  size={40}
+                  thickness={4}
+                  sections={[{ value: (currentPage / totalPages) * 100, color: 'blue' }]}
+                  label={
+                    <Text size="xs" align="center">{currentPage}</Text>
+                  }
+                  sx={(theme) => ({
+                    [theme.fn.smallerThan('md')]: {
+                      width: 32,
+                      height: 32,
+                    },
+                  })}
+                />
+              </Group>
+            </Paper>
+          </SimpleGrid>
+        </Paper>
+      )}
 
       <Paper withBorder p="md" radius="md">
         {isError ? (
@@ -256,57 +634,189 @@ const ResourceList: FC = () => {
         ) : (
           <>
             <Box sx={{ position: 'relative', minHeight: '400px' }}>
-              <Table striped highlightOnHover>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>
-                      <Group spacing="xs" sx={{ cursor: 'pointer' }} onClick={handleNameSort}>
-                        <Text>Name</Text>
-                        <ActionIcon
-                          size="xs"
-                          color={nameSort !== null ? 'blue' : 'gray'}
-                        >
-                          {nameSort === true ? (
-                            <IconArrowsSort size={14} style={{ transform: 'rotate(180deg)' }} />
-                          ) : nameSort === false ? (
-                            <IconArrowsSort size={14} />
-                          ) : (
-                            <IconArrowsSort size={14} opacity={0.5} />
-                          )}
-                        </ActionIcon>
-                      </Group>
-                    </th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
+              {viewMode === 'table' ? (
+                <Table striped highlightOnHover>
+                  <thead>
+                    <tr>
+                      <th>
+                        <Group spacing="xs" sx={{ cursor: 'pointer' }} onClick={() => handleColumnSort('uid')}>
+                          <Text>ID</Text>
+                          <ActionIcon
+                            size="xs"
+                            color={sortConfig.uid !== null ? 'blue' : 'gray'}
+                          >
+                            {sortConfig.uid === true ? (
+                              <IconArrowUp size={14} />
+                            ) : sortConfig.uid === false ? (
+                              <IconArrowDown size={14} />
+                            ) : (
+                              <IconArrowsSort size={14} opacity={0.5} />
+                            )}
+                          </ActionIcon>
+                        </Group>
+                      </th>
+                      <th>
+                        <Group spacing="xs" sx={{ cursor: 'pointer' }} onClick={() => handleColumnSort('name')}>
+                          <Text>Name</Text>
+                          <ActionIcon
+                            size="xs"
+                            color={sortConfig.name !== null ? 'blue' : 'gray'}
+                          >
+                            {sortConfig.name === true ? (
+                              <IconArrowUp size={14} />
+                            ) : sortConfig.name === false ? (
+                              <IconArrowDown size={14} />
+                            ) : (
+                              <IconArrowsSort size={14} opacity={0.5} />
+                            )}
+                          </ActionIcon>
+                        </Group>
+                      </th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {isLoadingData
+                      ? skeletonRows
+                      : items.map((item: ResourceListItem) => (
+                          <tr key={item.uid}>
+                            <td>
+                              <Text size="sm" color="dimmed">
+                                {item.uid}
+                              </Text>
+                            </td>
+                            <td>
+                              <Group spacing="xs">
+                                <Text weight={500}>{item.name}</Text>
+                                {isFavorite(item.uid) && (
+                                  <Badge size="xs" color="yellow" variant="filled" sx={{ width: 6, height: 6, padding: 0 }} />
+                                )}
+                              </Group>
+                            </td>
+                            <td>
+                              <Group spacing="xs">
+                                <Tooltip label="View details">
+                                  <ActionIcon
+                                    color={resourceConfig[type as ResourceType]?.color}
+                                    onClick={() => handleViewResource(item.uid)}
+                                  >
+                                    <IconEye size={16} />
+                                  </ActionIcon>
+                                </Tooltip>
+
+                                <Tooltip label={isFavorite(item.uid) ? "Remove from favorites" : "Add to favorites"}>
+                                  <ActionIcon
+                                    color="yellow"
+                                    variant={isFavorite(item.uid) ? "filled" : "light"}
+                                    onClick={() => toggleFavorite(item.uid, item.name)}
+                                  >
+                                    {isFavorite(item.uid) ? <IconStarFilled size={16} /> : <IconStar size={16} />}
+                                  </ActionIcon>
+                                </Tooltip>
+                              </Group>
+                            </td>
+                          </tr>
+                        ))}
+                  </tbody>
+                </Table>
+              ) : (
+                <SimpleGrid
+                  cols={3}
+                  spacing="lg"
+                  breakpoints={[
+                    { maxWidth: 'md', cols: 2, spacing: 'md' },
+                    { maxWidth: 'sm', cols: 1, spacing: 'sm' },
+                  ]}
+                >
                   {isLoadingData
-                    ? skeletonRows
+                    ? Array(6).fill(0).map((_, index) => (
+                        <Card key={`skeleton-card-${index}`} withBorder p="lg" radius="md">
+                          <Card.Section>
+                            <Skeleton height={160} />
+                          </Card.Section>
+                          <Skeleton height={20} mt="md" width="70%" />
+                          <Skeleton height={15} mt="sm" />
+                          <Group mt="md" position="apart">
+                            <Skeleton height={30} width={80} />
+                            <Skeleton height={30} circle />
+                          </Group>
+                        </Card>
+                      ))
                     : items.map((item: ResourceListItem) => (
-                        <tr key={item.uid}>
-                          <td>
-                            <Text size="sm" color="dimmed">
-                              {item.uid}
-                            </Text>
-                          </td>
-                          <td>
+                        <Card
+                          key={item.uid}
+                          withBorder
+                          p="lg"
+                          radius="md"
+                          sx={{
+                            transition: 'transform 200ms ease, box-shadow 200ms ease',
+                            '&:hover': {
+                              transform: 'translateY(-5px)',
+                              boxShadow: theme.shadows.md,
+                            },
+                          }}
+                        >
+                          <Card.Section>
+                            <Box sx={{ position: 'relative' }}>
+                              <Image
+                                src={resourceConfig[type as ResourceType]?.imagePlaceholder}
+                                height={160}
+                                alt={item.name}
+                                withPlaceholder
+                              />
+                              {isFavorite(item.uid) && (
+                                <ThemeIcon
+                                  color="yellow"
+                                  size="md"
+                                  radius="xl"
+                                  sx={{
+                                    position: 'absolute',
+                                    top: 10,
+                                    right: 10,
+                                    zIndex: 2,
+                                  }}
+                                >
+                                  <IconStarFilled size={14} />
+                                </ThemeIcon>
+                              )}
+                            </Box>
+                          </Card.Section>
+
+                          <Group position="apart" mt="md" mb="xs">
                             <Text weight={500}>{item.name}</Text>
-                          </td>
-                          <td>
-                            <Tooltip label="View details">
-                              <ActionIcon
-                                color={resourceConfig[type as ResourceType]?.color}
-                                onClick={() => handleViewResource(item.uid)}
-                              >
-                                <IconEye size={16} />
-                              </ActionIcon>
-                            </Tooltip>
-                          </td>
-                        </tr>
-                      ))}
-                </tbody>
-              </Table>
+                            <Badge color={resourceConfig[type as ResourceType]?.color} variant="light">
+                              {item.uid}
+                            </Badge>
+                          </Group>
+
+                          <Text size="sm" color="dimmed" mb="md">
+                            {resourceConfig[type as ResourceType]?.description}
+                          </Text>
+
+                          <Group position="apart">
+                            <Button
+                              variant="light"
+                              color={resourceConfig[type as ResourceType]?.color}
+                              onClick={() => handleViewResource(item.uid)}
+                              leftIcon={<IconEye size={16} />}
+                            >
+                              View
+                            </Button>
+
+                            <ActionIcon
+                              color="yellow"
+                              variant={isFavorite(item.uid) ? "filled" : "light"}
+                              onClick={() => toggleFavorite(item.uid, item.name)}
+                              size="lg"
+                            >
+                              {isFavorite(item.uid) ? <IconStarFilled size={18} /> : <IconStar size={18} />}
+                            </ActionIcon>
+                          </Group>
+                        </Card>
+                      ))
+                  }
+                </SimpleGrid>
+              )}
 
               {/* Overlay loading state */}
               {isFetching && (
@@ -373,6 +883,20 @@ const ResourceList: FC = () => {
                     value={currentPage}
                     onChange={handlePageChange}
                     withEdges
+                    sx={(theme) => ({
+                      [theme.fn.smallerThan('sm')]: {
+                        '.mantine-Pagination-control': {
+                          minWidth: 30,
+                          height: 30,
+                          fontSize: theme.fontSizes.xs,
+                        }
+                      },
+                      [theme.fn.smallerThan('xs')]: {
+                        '.mantine-Pagination-control:not(.mantine-Pagination-active):not(:first-of-type):not(:last-of-type)': {
+                          display: 'none',
+                        }
+                      }
+                    })}
                   />
                 </Group>
               </>

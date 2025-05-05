@@ -133,28 +133,29 @@ const AppShell: FC = () => {
           <Navbar.Section>
             <Divider my="sm" />
             <Group position="apart" px="xs" py="md">
-              <Group spacing="sm">
+              <Group spacing="sm" noWrap p={"xs"}>
                 <Avatar color="blue" radius="xl">
                   {user?.name.charAt(0) || "U"}
                 </Avatar>
-                <Box>
+                <Box sx={{ maxWidth:"60%",overflow:"hidden" }}>
                   <Text size="sm" weight={500}>
                     {user?.name || "User"}
                   </Text>
-                  <Text color="dimmed" size="xs">
+                  <Text color="dimmed" size="xs" sx={{ textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
                     {user?.email || "user@example.com"}
                   </Text>
+                  
                 </Box>
+                <ActionIcon
+                  color="red"
+                  variant="subtle"
+                  onClick={handleLogout}
+                  title="Logout"
+                >
+                  <IconLogout size={18} />
+                </ActionIcon>
+                
               </Group>
-
-              <ActionIcon
-                color="red"
-                variant="subtle"
-                onClick={handleLogout}
-                title="Logout"
-              >
-                <IconLogout size={18} />
-              </ActionIcon>
             </Group>
           </Navbar.Section>
         </Navbar>
